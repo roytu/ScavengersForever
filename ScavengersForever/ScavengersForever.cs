@@ -38,9 +38,9 @@ namespace ScavengersForever
         //The Plugin GUID should be a unique ID for this plugin, which is human readable (as it is used in places like the config).
         //If we see this PluginGUID as it is on thunderstore, we will deprecate this mod. Change the PluginAuthor and the PluginName !
         public const string PluginGUID = PluginAuthor + "." + PluginName;
-        public const string PluginAuthor = "AuthorName";
+        public const string PluginAuthor = "roytu";
         public const string PluginName = "ScavengersForever";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "0.0.4";
 
 		//We need our item definition to persist through our functions, and therefore make it a class field.
         private static ItemDef myItemDef;
@@ -50,10 +50,57 @@ namespace ScavengersForever
 		{
 			//Init our logging class so that we can properly log for debugging
 			Log.Init(Logger);
+
+			On.RoR2.Run.Start += (orig, self) =>
+			{
+				orig(self);
+				PlayerCharacterMasterController.instances[0].master.inventory.GiveRandomEquipment();
+				PlayerCharacterMasterController.instances[0].master.inventory.GiveRandomItems(20, true, true);
+			};
+
 			On.RoR2.CombatDirector.AttemptSpawnOnTarget += (orig, self, spawnTarget, placementMode) =>
 			{
 				return AttemptSpawnOnTarget(self, spawnTarget, placementMode);
 			};
+
+			On.RoR2.CombatDirector.Simulate += (orig, self, deltaTime) =>
+			{
+				if (self.targetPlayers)
+				{
+					self.playerRetargetTimer -= deltaTime;
+					if (self.playerRetargetTimer <= 0f)
+					{
+						self.playerRetargetTimer = self.rng.RangeFloat(1f, 10f);
+						self.PickPlayerAsSpawnTarget();
+					}
+				}
+				self.monsterSpawnTimer -= deltaTime;
+				if (self.monsterSpawnTimer <= 0f)
+				{
+					if (self.AttemptSpawnOnTarget(self.currentSpawnTarget ? self.currentSpawnTarget.transform : null, DirectorPlacementRule.PlacementMode.Random))
+					{
+						if (self.shouldSpawnOneWave)
+						{
+							Debug.Log("CombatDirector hasStartedwave = true");
+							self.hasStartedWave = true;
+						}
+						self.monsterSpawnTimer += self.rng.RangeFloat(self.minSeriesSpawnInterval, self.maxSeriesSpawnInterval);
+						return;
+					}
+					self.monsterSpawnTimer += self.rng.RangeFloat(self.minRerollSpawnInterval, self.maxRerollSpawnInterval) / 3f;  // Spawn faster
+					if (self.resetMonsterCardIfFailed)
+					{
+						self.currentMonsterCard = null;
+					}
+					if (self.shouldSpawnOneWave && self.hasStartedWave)
+					{
+						Debug.Log("CombatDirector wave complete");
+						base.enabled = false;
+						return;
+					}
+				}
+			};
+
 			/*
 			On.RoR2.SceneDirector.SelectCard += (orig, self, deck, maxCost) =>
 			{
@@ -114,10 +161,10 @@ namespace ScavengersForever
 				{
 					if (self.teamIndex == TeamIndex.Monster)
 					{
-						//healthComponent.body.maxHealth = 0.000001f;
+						//healthComponent.body.maxHealth *= 0.0001f;
 						//healthComponent.body.maxShield = 0f;
-						healthComponent.Networkhealth = 0.00000000001f;
-						healthComponent.Networkshield = -1000000000f;
+						healthComponent.Networkhealth *= 0.0001f;
+						healthComponent.Networkshield = -1000f;
 					}
 				}
 			}
@@ -148,19 +195,7 @@ namespace ScavengersForever
 				}
 				self.PrepareNewMonsterWave(self.finalMonsterCardsSelection.Evaluate(self.rng.nextNormalizedFloat));
 			}
-			if (self.spawnCountInCurrentWave >= self.maximumNumberToSpawnBeforeSkipping)
-			{
-				self.spawnCountInCurrentWave = 0;
-				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
-				{
-					Debug.LogFormat("Spawn count has hit the max ({0}/{1}). Aborting spawn.", new object[]
-					{
-						self.spawnCountInCurrentWave,
-						self.maximumNumberToSpawnBeforeSkipping
-					});
-				}
-				return false;
-			}
+
 			int cost = self.currentMonsterCard.cost;
 			dc.monsterCostThatMayOrMayNotBeElite = self.currentMonsterCard.cost;
 			int num = self.currentMonsterCard.cost;
@@ -176,52 +211,6 @@ namespace ScavengersForever
 			else
 			{
 				self.ResetEliteType();
-			}
-			if (!self.currentMonsterCard.CardIsValid())
-			{
-				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
-				{
-					Debug.LogFormat("Spawn card {0} is invalid, aborting spawn.", new object[]
-					{
-						self.currentMonsterCard.spawnCard
-					});
-				}
-				return false;
-			}
-			if (self.monsterCredit < (float)dc.monsterCostThatMayOrMayNotBeElite)
-			{
-				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
-				{
-					Debug.LogFormat("Spawn card {0} is too expensive, aborting spawn.", new object[]
-					{
-						self.currentMonsterCard.spawnCard
-					});
-				}
-				return false;
-			}
-			if (self.skipSpawnIfTooCheap && (float)(num * self.maximumNumberToSpawnBeforeSkipping) < self.monsterCredit)
-			{
-				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
-				{
-					Debug.LogFormat("Card {0} seems too cheap ({1}/{2}). Comparing against most expensive possible ({3})", new object[]
-					{
-						self.currentMonsterCard.spawnCard,
-						dc.monsterCostThatMayOrMayNotBeElite * self.maximumNumberToSpawnBeforeSkipping,
-						self.monsterCredit,
-						self.mostExpensiveMonsterCostInDeck
-					});
-				}
-				if (self.mostExpensiveMonsterCostInDeck > dc.monsterCostThatMayOrMayNotBeElite)
-				{
-					if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
-					{
-						Debug.LogFormat("Spawn card {0} is too cheap, aborting spawn.", new object[]
-						{
-							self.currentMonsterCard.spawnCard
-						});
-					}
-					return false;
-				}
 			}
 			
 			SpawnCard spawnCard = self.currentMonsterCard.spawnCard;
