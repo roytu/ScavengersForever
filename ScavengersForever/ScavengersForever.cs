@@ -16,9 +16,9 @@ using UnityEngine.Events;
 using UnityEngine.Networking;
 using UnityEngine.Serialization;
 
-namespace ExamplePlugin
+namespace ScavengersForever
 {
-	//This is an example plugin that can be put in BepInEx/plugins/ExamplePlugin/ExamplePlugin.dll to test out.
+	//This is an example plugin that can be put in BepInEx/plugins/ScavengersForever/ScavengersForever.dll to test out.
     //It's a small plugin that adds a relatively simple item to the game, and gives you that item whenever you press F2.
 
     //This attribute specifies that we have a dependency on R2API, as we're using it to add our item to the game.
@@ -39,7 +39,7 @@ namespace ExamplePlugin
         //If we see this PluginGUID as it is on thunderstore, we will deprecate this mod. Change the PluginAuthor and the PluginName !
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "AuthorName";
-        public const string PluginName = "ExamplePlugin";
+        public const string PluginName = "ScavengersForever";
         public const string PluginVersion = "1.0.0";
 
 		//We need our item definition to persist through our functions, and therefore make it a class field.
