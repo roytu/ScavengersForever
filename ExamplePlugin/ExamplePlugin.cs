@@ -29,7 +29,7 @@ namespace ExamplePlugin
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 	
 	//We will be using 3 modules from R2API: ItemAPI to add our item, ItemDropAPI to have our item drop ingame, and LanguageAPI to add our language tokens.
-    [R2APISubmoduleDependency(nameof(ItemAPI), nameof(ItemDropAPI), nameof(LanguageAPI))]
+    [R2APISubmoduleDependency(nameof(ItemAPI), nameof(LanguageAPI))]
 	
 	//This is the main declaration of our plugin class. BepInEx searches for all classes inheriting from BaseUnityPlugin to initialize on startup.
     //BaseUnityPlugin itself inherits from MonoBehaviour, so you can use this as a reference for what you can declare and use in your plugin class: https://docs.unity3d.com/ScriptReference/MonoBehaviour.html
@@ -70,7 +70,7 @@ namespace ExamplePlugin
 				SpawnCard spawnCard = Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
 				for (int i = 0; i < 20; i++)
 				{
-					self.directorCore.TrySpawnObject(new DirectorSpawnRequest(spawnCard, placementRule, self.rng));
+					DirectorCore.instance.TrySpawnObject(new DirectorSpawnRequest(spawnCard, placementRule, self.rng));
 				}
 
 				orig(self);
