@@ -3,6 +3,18 @@ using R2API;
 using R2API.Utils;
 using RoR2;
 using UnityEngine;
+using System;
+
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using RoR2.ConVar;
+using RoR2.Navigation;
+using RoR2.CharacterAI;
+using UnityEngine;
+using UnityEngine.Events;
+using UnityEngine.Networking;
+using UnityEngine.Serialization;
 
 namespace ExamplePlugin
 {
@@ -16,12 +28,12 @@ namespace ExamplePlugin
 	//This attribute is required, and lists metadata for your plugin.
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 	
-	//We will be using 2 modules from R2API: ItemAPI to add our item and LanguageAPI to add our language tokens.
-    [R2APISubmoduleDependency(nameof(ItemAPI), nameof(LanguageAPI))]
+	//We will be using 3 modules from R2API: ItemAPI to add our item, ItemDropAPI to have our item drop ingame, and LanguageAPI to add our language tokens.
+    [R2APISubmoduleDependency(nameof(ItemAPI), nameof(ItemDropAPI), nameof(LanguageAPI))]
 	
 	//This is the main declaration of our plugin class. BepInEx searches for all classes inheriting from BaseUnityPlugin to initialize on startup.
     //BaseUnityPlugin itself inherits from MonoBehaviour, so you can use this as a reference for what you can declare and use in your plugin class: https://docs.unity3d.com/ScriptReference/MonoBehaviour.html
-    public class ExamplePlugin : BaseUnityPlugin
+    public class ScavengersForever : BaseUnityPlugin
 	{
         //The Plugin GUID should be a unique ID for this plugin, which is human readable (as it is used in places like the config).
         //If we see this PluginGUID as it is on thunderstore, we will deprecate this mod. Change the PluginAuthor and the PluginName !
@@ -34,109 +46,213 @@ namespace ExamplePlugin
         private static ItemDef myItemDef;
 
 		//The Awake() method is run at the very start when the game is initialized.
-        public void Awake()
+		public void Awake()
+		{
+			//Init our logging class so that we can properly log for debugging
+			Log.Init(Logger);
+			On.RoR2.CombatDirector.AttemptSpawnOnTarget += (orig, self, spawnTarget, placementMode) =>
+			{
+				return AttemptSpawnOnTarget(self, spawnTarget, placementMode);
+			};
+			/*
+			On.RoR2.SceneDirector.SelectCard += (orig, self, deck, maxCost) =>
+			{
+				return Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
+			};
+			*/
+
+			On.RoR2.SceneDirector.PopulateScene += (orig, self) =>
+			{
+				DirectorPlacementRule placementRule = new DirectorPlacementRule
+				{
+					placementMode = DirectorPlacementRule.PlacementMode.Random
+				};
+				SpawnCard spawnCard = Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
+				for (int i = 0; i < 20; i++)
+				{
+					self.directorCore.TrySpawnObject(new DirectorSpawnRequest(spawnCard, placementRule, self.rng));
+				}
+
+				orig(self);
+			};
+			/*
+			On.RoR2.DirectorCore.TrySpawnObject += (orig, self, directorSpawnRequest) =>
+			{
+				
+				directorSpawnRequest.spawnCard = Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
+				return orig(self, directorSpawnRequest);
+			};
+			*/
+
+			On.EntityStates.ScavMonster.Death.OnEnter += (orig, self) =>
+			{
+				orig(self);
+				if (NetworkServer.active)
+				{
+					CharacterMaster characterMaster = self.characterBody ? self.characterBody.master : null;
+					if (characterMaster)
+					{
+						self.shouldDropPack = true;
+						Stage.instance.scavPackDroppedServer = true;
+					}
+				}
+			};
+
+			On.RoR2.CharacterMaster.OnBodyStart += (orig, self, body) =>
+			{
+				orig(self, body);
+				OnBodyStart(self, body);
+			};
+		}
+
+		public void OnBodyStart(RoR2.CharacterMaster self, CharacterBody body)
         {
-            //Init our logging class so that we can properly log for debugging
-            Log.Init(Logger);
+			if (NetworkServer.active)
+			{
+				HealthComponent healthComponent = body.healthComponent;
+				if (healthComponent)
+				{
+					if (self.teamIndex == TeamIndex.Monster)
+					{
+						//healthComponent.body.maxHealth = 0.000001f;
+						//healthComponent.body.maxShield = 0f;
+						healthComponent.Networkhealth = 0.00000000001f;
+						healthComponent.Networkshield = -1000000000f;
+					}
+				}
+			}
+		}
 
-            //First let's define our item
-            myItemDef = ScriptableObject.CreateInstance<ItemDef>();
-
-            // Language Tokens, check AddTokens() below.
-            myItemDef.name = "EXAMPLE_CLOAKONKILL_NAME";
-            myItemDef.nameToken = "EXAMPLE_CLOAKONKILL_NAME";
-            myItemDef.pickupToken = "EXAMPLE_CLOAKONKILL_PICKUP";
-            myItemDef.descriptionToken = "EXAMPLE_CLOAKONKILL_DESC";
-            myItemDef.loreToken = "EXAMPLE_CLOAKONKILL_LORE";
-
-            //The tier determines what rarity the item is:
-            //Tier1=white, Tier2=green, Tier3=red, Lunar=Lunar, Boss=yellow,
-            //and finally NoTier is generally used for helper items, like the tonic affliction
-            myItemDef.tier = ItemTier.Tier2;
-
-            //You can create your own icons and prefabs through assetbundles, but to keep this boilerplate brief, we'll be using question marks.
-            myItemDef.pickupIconSprite = Resources.Load<Sprite>("Textures/MiscIcons/texMysteryIcon");
-            myItemDef.pickupModelPrefab = Resources.Load<GameObject>("Prefabs/PickupModels/PickupMystery");
-
-            //Can remove determines if a shrine of order, or a printer can take this item, generally true, except for NoTier items.
-            myItemDef.canRemove = true;
-
-            //Hidden means that there will be no pickup notification,
-            //and it won't appear in the inventory at the top of the screen.
-            //This is useful for certain noTier helper items, such as the DrizzlePlayerHelper.
-            myItemDef.hidden = false;
-			
-            //Now let's turn the tokens we made into actual strings for the game:
-            AddTokens();
-
-            //You can add your own display rules here, where the first argument passed are the default display rules: the ones used when no specific display rules for a character are found.
-            //For this example, we are omitting them, as they are quite a pain to set up without tools like ItemDisplayPlacementHelper
-            var displayRules = new ItemDisplayRuleDict(null);
-
-            //Then finally add it to R2API
-            ItemAPI.Add(new CustomItem(myItemDef, displayRules));
-
-            //But now we have defined an item, but it doesn't do anything yet. So we'll need to define that ourselves.
-            GlobalEventManager.onCharacterDeathGlobal += GlobalEventManager_onCharacterDeathGlobal;
-
-            // This line of log will appear in the bepinex console when the Awake method is done.
-            Log.LogInfo(nameof(Awake) + " done.");
-        }
-
-        private void GlobalEventManager_onCharacterDeathGlobal(DamageReport report)
+		private class DisplayClass
         {
-            //If a character was killed by the world, we shouldn't do anything.
-            if (!report.attacker || !report.attackerBody )
-                return;
-            
-            CharacterBody attacker = report.attackerBody;
+			public RoR2.CombatDirector combatDirector;
+			public float monsterCostThatMayOrMayNotBeElite;
+			public RoR2.CombatDirector.EliteTierDef eliteTier;
+			public RoR2.EliteDef eliteDef;
 
-            //We need an inventory to do check for our item
-            if (attacker.inventory)
+			public void OnCardSpawned(SpawnCard.SpawnResult result)
             {
-                //store the amount of our item we have
-                int garbCount = attacker.inventory.GetItemCount(myItemDef.itemIndex);
-                if (garbCount > 0 &&
-                    //Roll for our 50% chance.
-                    Util.CheckRoll(50, attacker.master))
-                {
-                    //Since we passed all checks, we now give our attacker the cloaked buff.
-                    //Note how we are scaling the buff duration depending on the number of the custom item in our inventory.
-                    attacker.AddTimedBuff(RoR2Content.Buffs.Cloak, 3 + garbCount);
-                }
+
             }
         }
 
-        //This function adds the tokens from the item using LanguageAPI, the comments in here are a style guide, but is very opiniated. Make your own judgements!
-        private void AddTokens()
-        {
-            //The Name should be self explanatory
-            LanguageAPI.Add("EXAMPLE_CLOAKONKILL_NAME", "Cuthroat's Garb");
+		private bool AttemptSpawnOnTarget(RoR2.CombatDirector self, Transform spawnTarget, DirectorPlacementRule.PlacementMode placementMode = DirectorPlacementRule.PlacementMode.Approximate)
+		{
+			DisplayClass dc = new DisplayClass();
+			dc.combatDirector = self;
+			if (self.currentMonsterCard == null)
+			{
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.Log("Current monster card is null, pick new one.");
+				}
+				self.PrepareNewMonsterWave(self.finalMonsterCardsSelection.Evaluate(self.rng.nextNormalizedFloat));
+			}
+			if (self.spawnCountInCurrentWave >= self.maximumNumberToSpawnBeforeSkipping)
+			{
+				self.spawnCountInCurrentWave = 0;
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Spawn count has hit the max ({0}/{1}). Aborting spawn.", new object[]
+					{
+						self.spawnCountInCurrentWave,
+						self.maximumNumberToSpawnBeforeSkipping
+					});
+				}
+				return false;
+			}
+			int cost = self.currentMonsterCard.cost;
+			dc.monsterCostThatMayOrMayNotBeElite = self.currentMonsterCard.cost;
+			int num = self.currentMonsterCard.cost;
+			dc.eliteTier = self.currentActiveEliteTier;
+			dc.eliteDef = self.currentActiveEliteDef;
+			num = (int)((float)dc.monsterCostThatMayOrMayNotBeElite * self.currentActiveEliteTier.costMultiplier);
+			if ((float)num <= self.monsterCredit)
+			{
+				dc.monsterCostThatMayOrMayNotBeElite = num;
+				dc.eliteTier = self.currentActiveEliteTier;
+				dc.eliteDef = self.currentActiveEliteDef;
+			}
+			else
+			{
+				self.ResetEliteType();
+			}
+			if (!self.currentMonsterCard.CardIsValid())
+			{
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Spawn card {0} is invalid, aborting spawn.", new object[]
+					{
+						self.currentMonsterCard.spawnCard
+					});
+				}
+				return false;
+			}
+			if (self.monsterCredit < (float)dc.monsterCostThatMayOrMayNotBeElite)
+			{
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Spawn card {0} is too expensive, aborting spawn.", new object[]
+					{
+						self.currentMonsterCard.spawnCard
+					});
+				}
+				return false;
+			}
+			if (self.skipSpawnIfTooCheap && (float)(num * self.maximumNumberToSpawnBeforeSkipping) < self.monsterCredit)
+			{
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Card {0} seems too cheap ({1}/{2}). Comparing against most expensive possible ({3})", new object[]
+					{
+						self.currentMonsterCard.spawnCard,
+						dc.monsterCostThatMayOrMayNotBeElite * self.maximumNumberToSpawnBeforeSkipping,
+						self.monsterCredit,
+						self.mostExpensiveMonsterCostInDeck
+					});
+				}
+				if (self.mostExpensiveMonsterCostInDeck > dc.monsterCostThatMayOrMayNotBeElite)
+				{
+					if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+					{
+						Debug.LogFormat("Spawn card {0} is too cheap, aborting spawn.", new object[]
+						{
+							self.currentMonsterCard.spawnCard
+						});
+					}
+					return false;
+				}
+			}
+			
+			SpawnCard spawnCard = self.currentMonsterCard.spawnCard;
+			DirectorPlacementRule directorPlacementRule = new DirectorPlacementRule
+			{
+				placementMode = placementMode,
+				spawnOnTarget = spawnTarget,
+				preventOverhead = self.currentMonsterCard.preventOverhead
+			};
+			DirectorCore.GetMonsterSpawnDistance(self.currentMonsterCard.spawnDistance, out directorPlacementRule.minDistance, out directorPlacementRule.maxDistance);
+			directorPlacementRule.minDistance *= self.spawnDistanceMultiplier;
+			directorPlacementRule.maxDistance *= self.spawnDistanceMultiplier;
 
-            //The Pickup is the short text that appears when you first pick this up. This text should be short and to the point, numbers are generally ommited.
-            LanguageAPI.Add("EXAMPLE_CLOAKONKILL_PICKUP", "Chance to cloak on kill");
+			spawnCard = Resources.Load<SpawnCard>("spawncards/characterspawncards/cscscav");
 
-            //The Description is where you put the actual numbers and give an advanced description.
-            LanguageAPI.Add("EXAMPLE_CLOAKONKILL_DESC", "Whenever you <style=cIsDamage>kill an enemy</style>, you have a <style=cIsUtility>5%</style> chance to cloak for <style=cIsUtility>4s</style> <style=cStack>(+1s per stack)</style>.");
-            
-            //The Lore is, well, flavor. You can write pretty much whatever you want here.
-            LanguageAPI.Add("EXAMPLE_CLOAKONKILL_LORE", "Those who visit in the night are either praying for a favour, or preying on a neighbour.");
-        }
+			DirectorSpawnRequest directorSpawnRequest = new DirectorSpawnRequest(spawnCard, directorPlacementRule, self.rng);
+			directorSpawnRequest.ignoreTeamMemberLimit = self.ignoreTeamSizeLimit;
+			directorSpawnRequest.teamIndexOverride = new TeamIndex?(self.teamIndex);
+			//directorSpawnRequest.onSpawnedServer = new Action<SpawnCard.SpawnResult>(dc.OnCardSpawned);
 
-        //The Update() method is run on every frame of the game.
-        private void Update()
-        {
-            //This if statement checks if the player has currently pressed F2.
-            if (Input.GetKeyDown(KeyCode.F2))
-            {
-                //Get the player body to use a position:	
-                var transform = PlayerCharacterMasterController.instances[0].master.GetBodyObject().transform;
-
-                //And then drop our defined item in front of the player.
-
-                Log.LogInfo($"Player pressed F2. Spawning our custom item at coordinates {transform.position}");
-                PickupDropletController.CreatePickupDroplet(PickupCatalog.FindPickupIndex(myItemDef.itemIndex), transform.position, transform.forward * 20f);
-            }   
-        }
-    }
+			if (!DirectorCore.instance.TrySpawnObject(directorSpawnRequest))
+			{
+				Debug.LogFormat("Spawn card {0} failed to spawn. Aborting cost procedures.", new object[]
+				{
+					spawnCard
+				});
+				return false;
+			}
+			//self.monsterCredit -= (float)dc.monsterCostThatMayOrMayNotBeElite;
+			self.spawnCountInCurrentWave++;
+			return true;
+		}
+	}
 }
