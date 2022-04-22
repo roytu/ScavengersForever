@@ -7,6 +7,7 @@ using System;
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Collections.ObjectModel;
 using RoR2.ConVar;
 using RoR2.Navigation;
@@ -40,10 +41,13 @@ namespace ScavengersForever
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "roytu";
         public const string PluginName = "ScavengersForever";
-        public const string PluginVersion = "0.0.4";
+        public const string PluginVersion = "0.0.5";
 
 		//We need our item definition to persist through our functions, and therefore make it a class field.
         private static ItemDef myItemDef;
+
+		public static int spawnCount = 0;
+		public static DirectorPlacementRule.PlacementMode enemyPlacement = DirectorPlacementRule.PlacementMode.Random;
 
 		//The Awake() method is run at the very start when the game is initialized.
 		public void Awake()
@@ -54,8 +58,87 @@ namespace ScavengersForever
 			On.RoR2.Run.Start += (orig, self) =>
 			{
 				orig(self);
-				PlayerCharacterMasterController.instances[0].master.inventory.GiveRandomEquipment();
-				PlayerCharacterMasterController.instances[0].master.inventory.GiveRandomItems(20, true, true);
+				int playerCount = PlayerCharacterMasterController.instances.Count;
+				for (int i = 0; i < playerCount; i++)
+                {
+					PlayerCharacterMasterController.instances[i].master.inventory.GiveRandomEquipment();
+					PlayerCharacterMasterController.instances[i].master.inventory.GiveRandomItems(20, true, true);
+				}
+			};
+
+			On.RoR2.CombatDirector.SetNextSpawnAsBoss += (orig, self) =>
+			{
+				enemyPlacement = DirectorPlacementRule.PlacementMode.Approximate;
+				orig(self);
+			};
+
+			On.RoR2.TeleporterInteraction.AttemptSpawnPortal += (orig, self, portalSpawnCard, minDistance, maxDistance, successChatToken) =>
+			{
+				enemyPlacement = DirectorPlacementRule.PlacementMode.Random;
+				return orig(self, portalSpawnCard, minDistance, maxDistance, successChatToken);
+			};
+
+			On.EntityStates.ScavMonster.FindItem.OnEnter += (orig, self) =>
+			{
+				// base.OnEnter()
+				if (self.characterBody)
+				{
+					self.attackSpeedStat = self.characterBody.attackSpeed;
+					self.damageStat = self.characterBody.damage;
+					self.critStat = self.characterBody.crit;
+					self.moveSpeedStat = self.characterBody.moveSpeed;
+				}
+
+				Inventory component = self.GetComponent<Inventory>();
+				float coeff = RoR2.Run.instance.time / 100;
+				if (coeff < 1)
+					coeff = 1;
+
+				Debug.LogFormat("Granting scavenger stack multiplier: {0}", new object[]
+				{
+					coeff
+				});
+
+				// ScavMonster.FindItem.OnEnter
+				self.duration = EntityStates.ScavMonster.FindItem.baseDuration / self.attackSpeedStat;
+				self.PlayCrossfade("Body", "SitRummage", "Sit.playbackRate", self.duration, 0.1f);
+				Util.PlaySound(EntityStates.ScavMonster.FindItem.sound, base.gameObject);
+				if (self.isAuthority)
+				{
+					WeightedSelection<List<PickupIndex>> weightedSelection = new WeightedSelection<List<PickupIndex>>(8);
+					weightedSelection.AddChoice(Run.instance.availableTier1DropList.Where(new Func<PickupIndex, bool>(self.PickupIsNonBlacklistedItem)).ToList<PickupIndex>(), EntityStates.ScavMonster.FindItem.tier1Chance);
+					weightedSelection.AddChoice(Run.instance.availableTier2DropList.Where(new Func<PickupIndex, bool>(self.PickupIsNonBlacklistedItem)).ToList<PickupIndex>(), EntityStates.ScavMonster.FindItem.tier2Chance);
+					weightedSelection.AddChoice(Run.instance.availableTier3DropList.Where(new Func<PickupIndex, bool>(self.PickupIsNonBlacklistedItem)).ToList<PickupIndex>(), EntityStates.ScavMonster.FindItem.tier3Chance);
+					List<PickupIndex> list = weightedSelection.Evaluate(UnityEngine.Random.value);
+					self.dropPickup = list[UnityEngine.Random.Range(0, list.Count)];
+					PickupDef pickupDef = PickupCatalog.GetPickupDef(self.dropPickup);
+					if (pickupDef != null)
+					{
+						ItemDef itemDef = ItemCatalog.GetItemDef(pickupDef.itemIndex);
+						if (itemDef != null)
+						{
+							self.itemsToGrant = 0;
+							switch (itemDef.tier)
+							{
+								case ItemTier.Tier1:
+									self.itemsToGrant = (int)(EntityStates.ScavMonster.FindItem.tier1Count * coeff);
+									break;
+								case ItemTier.Tier2:
+									self.itemsToGrant = (int)(EntityStates.ScavMonster.FindItem.tier2Count * coeff);
+									break;
+								case ItemTier.Tier3:
+									self.itemsToGrant = (int)(EntityStates.ScavMonster.FindItem.tier3Count * coeff);
+									break;
+								default:
+									self.itemsToGrant = (int)(coeff);
+									break;
+							}
+						}
+					}
+				}
+				Transform transform = self.FindModelChild("PickupDisplay");
+				self.pickupDisplay = transform.GetComponent<PickupDisplay>();
+				self.pickupDisplay.SetPickupIndex(self.dropPickup, false);
 			};
 
 			On.RoR2.CombatDirector.AttemptSpawnOnTarget += (orig, self, spawnTarget, placementMode) =>
@@ -77,7 +160,7 @@ namespace ScavengersForever
 				self.monsterSpawnTimer -= deltaTime;
 				if (self.monsterSpawnTimer <= 0f)
 				{
-					if (self.AttemptSpawnOnTarget(self.currentSpawnTarget ? self.currentSpawnTarget.transform : null, DirectorPlacementRule.PlacementMode.Random))
+					if (self.AttemptSpawnOnTarget(self.currentSpawnTarget ? self.currentSpawnTarget.transform : null, enemyPlacement))
 					{
 						if (self.shouldSpawnOneWave)
 						{
@@ -163,7 +246,14 @@ namespace ScavengersForever
 					{
 						//healthComponent.body.maxHealth *= 0.0001f;
 						//healthComponent.body.maxShield = 0f;
-						healthComponent.Networkhealth *= 0.0001f;
+						float coeff = RoR2.Run.instance.time / 10;
+						Debug.LogFormat("Time Coefficient: {0}", new object[]
+                        {
+							coeff
+                        });
+						if (coeff < 1)
+							coeff = 1;
+						healthComponent.Networkhealth *= 0.0001f * coeff;
 						healthComponent.Networkshield = -1000f;
 					}
 				}
@@ -185,63 +275,124 @@ namespace ScavengersForever
 
 		private bool AttemptSpawnOnTarget(RoR2.CombatDirector self, Transform spawnTarget, DirectorPlacementRule.PlacementMode placementMode = DirectorPlacementRule.PlacementMode.Approximate)
 		{
-			DisplayClass dc = new DisplayClass();
-			dc.combatDirector = self;
 			if (self.currentMonsterCard == null)
 			{
 				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
 				{
 					Debug.Log("Current monster card is null, pick new one.");
 				}
+				if (self.finalMonsterCardsSelection == null)
+				{
+					return false;
+				}
 				self.PrepareNewMonsterWave(self.finalMonsterCardsSelection.Evaluate(self.rng.nextNormalizedFloat));
 			}
-
-			int cost = self.currentMonsterCard.cost;
-			dc.monsterCostThatMayOrMayNotBeElite = self.currentMonsterCard.cost;
-			int num = self.currentMonsterCard.cost;
-			dc.eliteTier = self.currentActiveEliteTier;
-			dc.eliteDef = self.currentActiveEliteDef;
-			num = (int)((float)dc.monsterCostThatMayOrMayNotBeElite * self.currentActiveEliteTier.costMultiplier);
-			if ((float)num <= self.monsterCredit)
+			if (self.spawnCountInCurrentWave >= self.maximumNumberToSpawnBeforeSkipping)
 			{
-				dc.monsterCostThatMayOrMayNotBeElite = num;
-				dc.eliteTier = self.currentActiveEliteTier;
-				dc.eliteDef = self.currentActiveEliteDef;
+				self.spawnCountInCurrentWave = 0;
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Spawn count has hit the max ({0}/{1}). Aborting spawn.", new object[]
+					{
+						self.spawnCountInCurrentWave,
+						self.maximumNumberToSpawnBeforeSkipping
+					});
+				}
+				return false;
+			}
+
+			var bossCount = 0;
+			List<BossGroup> instancesList = InstanceTracker.GetInstancesList<BossGroup>();
+			for (int i = 0; i < instancesList.Count; i++)
+			{
+				bossCount += instancesList[i].combatSquad.readOnlyMembersList.Count;
+			}
+			if (bossCount > 40)
+            {
+				Debug.LogFormat("BossCount is {0}. Do not spawn ze boss", new object[]
+                {
+					bossCount
+                });
+				return false;
+			}
+
+			int num = self.currentMonsterCard.cost;
+			int num2 = self.currentMonsterCard.cost;
+			float num3 = 1f;
+			EliteDef eliteDef = self.currentActiveEliteDef;
+			num2 = (int)((float)num * self.currentActiveEliteTier.costMultiplier);
+			if ((float)num2 <= self.monsterCredit)
+			{
+				num = num2;
+				num3 = self.currentActiveEliteTier.costMultiplier;
 			}
 			else
 			{
 				self.ResetEliteType();
+				eliteDef = self.currentActiveEliteDef;
 			}
-			
-			SpawnCard spawnCard = self.currentMonsterCard.spawnCard;
-			DirectorPlacementRule directorPlacementRule = new DirectorPlacementRule
+			if (!self.currentMonsterCard.IsAvailable())
 			{
-				placementMode = placementMode,
-				spawnOnTarget = spawnTarget,
-				preventOverhead = self.currentMonsterCard.preventOverhead
-			};
-			DirectorCore.GetMonsterSpawnDistance(self.currentMonsterCard.spawnDistance, out directorPlacementRule.minDistance, out directorPlacementRule.maxDistance);
-			directorPlacementRule.minDistance *= self.spawnDistanceMultiplier;
-			directorPlacementRule.maxDistance *= self.spawnDistanceMultiplier;
-
-			spawnCard = Resources.Load<SpawnCard>("spawncards/characterspawncards/cscscav");
-
-			DirectorSpawnRequest directorSpawnRequest = new DirectorSpawnRequest(spawnCard, directorPlacementRule, self.rng);
-			directorSpawnRequest.ignoreTeamMemberLimit = self.ignoreTeamSizeLimit;
-			directorSpawnRequest.teamIndexOverride = new TeamIndex?(self.teamIndex);
-			//directorSpawnRequest.onSpawnedServer = new Action<SpawnCard.SpawnResult>(dc.OnCardSpawned);
-
-			if (!DirectorCore.instance.TrySpawnObject(directorSpawnRequest))
-			{
-				Debug.LogFormat("Spawn card {0} failed to spawn. Aborting cost procedures.", new object[]
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
 				{
-					spawnCard
-				});
+					Debug.LogFormat("Spawn card {0} is invalid, aborting spawn.", new object[]
+					{
+						self.currentMonsterCard.spawnCard
+					});
+				}
 				return false;
 			}
-			//self.monsterCredit -= (float)dc.monsterCostThatMayOrMayNotBeElite;
-			self.spawnCountInCurrentWave++;
-			return true;
+			if (self.monsterCredit < (float)num)
+			{
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Spawn card {0} is too expensive, aborting spawn.", new object[]
+					{
+						self.currentMonsterCard.spawnCard
+					});
+				}
+				return false;
+			}
+			if (self.skipSpawnIfTooCheap && (float)(num2 * self.maximumNumberToSpawnBeforeSkipping) < self.monsterCredit)
+			{
+				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+				{
+					Debug.LogFormat("Card {0} seems too cheap ({1}/{2}). Comparing against most expensive possible ({3})", new object[]
+					{
+						self.currentMonsterCard.spawnCard,
+						num * self.maximumNumberToSpawnBeforeSkipping,
+						self.monsterCredit,
+						self.mostExpensiveMonsterCostInDeck
+					});
+				}
+				if (self.mostExpensiveMonsterCostInDeck > num)
+				{
+					if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
+					{
+						Debug.LogFormat("Spawn card {0} is too cheap, aborting spawn.", new object[]
+						{
+							self.currentMonsterCard.spawnCard
+						});
+					}
+					return false;
+				}
+			}
+			SpawnCard spawnCard = self.currentMonsterCard.spawnCard;
+			spawnCard = Resources.Load<SpawnCard>("spawncards/characterspawncards/cscscav");
+			SpawnCard spawnCard2 = spawnCard;
+			EliteDef eliteDef2 = eliteDef;
+			float valueMultiplier = num3;
+			bool preventOverhead = self.currentMonsterCard.preventOverhead;
+			if (self.Spawn(spawnCard2, eliteDef2, spawnTarget, self.currentMonsterCard.spawnDistance, preventOverhead, valueMultiplier, placementMode))
+			{
+				self.monsterCredit -= (float)num / 10;
+				self.totalCreditsSpent += (float)num / 10;
+				self.spawnCountInCurrentWave++;
+				spawnCount++;
+				Debug.LogFormat("Spawned a scavenger. Current count: {0}", new object[] { spawnCount });
+				return true;
+			}
+			return false;
 		}
 	}
 }
