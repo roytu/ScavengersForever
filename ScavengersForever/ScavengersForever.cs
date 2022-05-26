@@ -41,7 +41,7 @@ namespace ScavengersForever
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "roytu";
         public const string PluginName = "ScavengersForever";
-        public const string PluginVersion = "0.0.5";
+        public const string PluginVersion = "0.0.6";
 
 		//We need our item definition to persist through our functions, and therefore make it a class field.
         private static ItemDef myItemDef;
@@ -80,7 +80,7 @@ namespace ScavengersForever
 
 			On.EntityStates.ScavMonster.FindItem.OnEnter += (orig, self) =>
 			{
-				// base.OnEnter()
+				// base.OnEnter() -> EntityStates.BaseState.OnEnter()
 				if (self.characterBody)
 				{
 					self.attackSpeedStat = self.characterBody.attackSpeed;
@@ -90,7 +90,7 @@ namespace ScavengersForever
 				}
 
 				Inventory component = self.GetComponent<Inventory>();
-				float coeff = RoR2.Run.instance.time / 100;
+				float coeff = (float)Math.Pow(RoR2.Run.instance.time / 30, 2);
 				if (coeff < 1)
 					coeff = 1;
 
@@ -160,7 +160,7 @@ namespace ScavengersForever
 				self.monsterSpawnTimer -= deltaTime;
 				if (self.monsterSpawnTimer <= 0f)
 				{
-					if (self.AttemptSpawnOnTarget(self.currentSpawnTarget ? self.currentSpawnTarget.transform : null, enemyPlacement))
+					if (self.AttemptSpawnOnTarget(self.currentSpawnTarget ? self.currentSpawnTarget.transform : null, DirectorPlacementRule.PlacementMode.Random))
 					{
 						if (self.shouldSpawnOneWave)
 						{
@@ -184,20 +184,13 @@ namespace ScavengersForever
 				}
 			};
 
-			/*
-			On.RoR2.SceneDirector.SelectCard += (orig, self, deck, maxCost) =>
-			{
-				return Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
-			};
-			*/
-
 			On.RoR2.SceneDirector.PopulateScene += (orig, self) =>
 			{
 				DirectorPlacementRule placementRule = new DirectorPlacementRule
 				{
 					placementMode = DirectorPlacementRule.PlacementMode.Random
 				};
-				SpawnCard spawnCard = Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
+				InteractableSpawnCard spawnCard = Resources.Load<InteractableSpawnCard>("SpawnCards/InteractableSpawnCard/iscShrineRestack");
 				for (int i = 0; i < 20; i++)
 				{
 					DirectorCore.instance.TrySpawnObject(new DirectorSpawnRequest(spawnCard, placementRule, self.rng));
@@ -205,14 +198,6 @@ namespace ScavengersForever
 
 				orig(self);
 			};
-			/*
-			On.RoR2.DirectorCore.TrySpawnObject += (orig, self, directorSpawnRequest) =>
-			{
-				
-				directorSpawnRequest.spawnCard = Resources.Load<SpawnCard>("spawncards/interactablespawncard/iscshrinerestack");
-				return orig(self, directorSpawnRequest);
-			};
-			*/
 
 			On.EntityStates.ScavMonster.Death.OnEnter += (orig, self) =>
 			{
@@ -239,39 +224,65 @@ namespace ScavengersForever
         {
 			if (NetworkServer.active)
 			{
+				self.lostBodyToDeath = false;
+			}
+			self.preventGameOver = true;
+			self.killerBodyIndex = BodyIndex.None;
+			self.killedByUnsafeArea = false;
+			body.RecalculateStats();
+			if (NetworkServer.active)
+			{
+				BaseAI[] array = self.aiComponents;
+				for (int i = 0; i < array.Length; i++)
+				{
+					array[i].OnBodyStart(body);
+				}
+			}
+			if (self.playerCharacterMasterController)
+			{
+				if (self.playerCharacterMasterController.networkUserObject)
+				{
+					bool isLocalPlayer = self.playerCharacterMasterController.networkUserObject.GetComponent<NetworkIdentity>().isLocalPlayer;
+				}
+				self.playerCharacterMasterController.OnBodyStart();
+			}
+			if (self.inventory.GetItemCount(RoR2Content.Items.Ghost) > 0)
+			{
+				Util.PlaySound("Play_item_proc_ghostOnKill", body.gameObject);
+			}
+			if (NetworkServer.active)
+			{
 				HealthComponent healthComponent = body.healthComponent;
 				if (healthComponent)
 				{
-					if (self.teamIndex == TeamIndex.Monster)
+					if (self.teamIndex == TeamIndex.Player && Run.instance.selectedDifficulty >= DifficultyIndex.Eclipse1)
+					{
+						healthComponent.Networkhealth = healthComponent.fullHealth * 0.5f;
+					}
+					else if (self.teamIndex == TeamIndex.Monster)
 					{
 						//healthComponent.body.maxHealth *= 0.0001f;
 						//healthComponent.body.maxShield = 0f;
 						float coeff = RoR2.Run.instance.time / 10;
 						Debug.LogFormat("Time Coefficient: {0}", new object[]
-                        {
+						{
 							coeff
-                        });
+						});
 						if (coeff < 1)
 							coeff = 1;
-						healthComponent.Networkhealth *= 0.0001f * coeff;
+						healthComponent.Networkhealth *= 0.001f * coeff;
 						healthComponent.Networkshield = -1000f;
 					}
+					else
+					{
+						healthComponent.Networkhealth = healthComponent.fullHealth;
+					}
 				}
+				self.UpdateBodyGodMode();
+				self.StartLifeStopwatch();
 			}
+			self.SetUpGummyClone();
 		}
-
-		private class DisplayClass
-        {
-			public RoR2.CombatDirector combatDirector;
-			public float monsterCostThatMayOrMayNotBeElite;
-			public RoR2.CombatDirector.EliteTierDef eliteTier;
-			public RoR2.EliteDef eliteDef;
-
-			public void OnCardSpawned(SpawnCard.SpawnResult result)
-            {
-
-            }
-        }
 
 		private bool AttemptSpawnOnTarget(RoR2.CombatDirector self, Transform spawnTarget, DirectorPlacementRule.PlacementMode placementMode = DirectorPlacementRule.PlacementMode.Approximate)
 		{
@@ -294,28 +305,12 @@ namespace ScavengersForever
 				{
 					Debug.LogFormat("Spawn count has hit the max ({0}/{1}). Aborting spawn.", new object[]
 					{
-						self.spawnCountInCurrentWave,
-						self.maximumNumberToSpawnBeforeSkipping
+				self.spawnCountInCurrentWave,
+				self.maximumNumberToSpawnBeforeSkipping
 					});
 				}
 				return false;
 			}
-
-			var bossCount = 0;
-			List<BossGroup> instancesList = InstanceTracker.GetInstancesList<BossGroup>();
-			for (int i = 0; i < instancesList.Count; i++)
-			{
-				bossCount += instancesList[i].combatSquad.readOnlyMembersList.Count;
-			}
-			if (bossCount > 40)
-            {
-				Debug.LogFormat("BossCount is {0}. Do not spawn ze boss", new object[]
-                {
-					bossCount
-                });
-				return false;
-			}
-
 			int num = self.currentMonsterCard.cost;
 			int num2 = self.currentMonsterCard.cost;
 			float num3 = 1f;
@@ -337,7 +332,7 @@ namespace ScavengersForever
 				{
 					Debug.LogFormat("Spawn card {0} is invalid, aborting spawn.", new object[]
 					{
-						self.currentMonsterCard.spawnCard
+				self.currentMonsterCard.spawnCard
 					});
 				}
 				return false;
@@ -348,30 +343,31 @@ namespace ScavengersForever
 				{
 					Debug.LogFormat("Spawn card {0} is too expensive, aborting spawn.", new object[]
 					{
-						self.currentMonsterCard.spawnCard
+				self.currentMonsterCard.spawnCard
 					});
 				}
 				return false;
 			}
-			if (self.skipSpawnIfTooCheap && (float)(num2 * self.maximumNumberToSpawnBeforeSkipping) < self.monsterCredit)
+			if (self.skipSpawnIfTooCheap && self.consecutiveCheapSkips < self.maxConsecutiveCheapSkips && (float)(num2 * self.maximumNumberToSpawnBeforeSkipping) < self.monsterCredit)
 			{
 				if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
 				{
 					Debug.LogFormat("Card {0} seems too cheap ({1}/{2}). Comparing against most expensive possible ({3})", new object[]
 					{
-						self.currentMonsterCard.spawnCard,
-						num * self.maximumNumberToSpawnBeforeSkipping,
-						self.monsterCredit,
-						self.mostExpensiveMonsterCostInDeck
+				self.currentMonsterCard.spawnCard,
+				num * self.maximumNumberToSpawnBeforeSkipping,
+				self.monsterCredit,
+				self.mostExpensiveMonsterCostInDeck
 					});
 				}
 				if (self.mostExpensiveMonsterCostInDeck > num)
 				{
+					self.consecutiveCheapSkips++;
 					if (CombatDirector.cvDirectorCombatEnableInternalLogs.value)
 					{
 						Debug.LogFormat("Spawn card {0} is too cheap, aborting spawn.", new object[]
 						{
-							self.currentMonsterCard.spawnCard
+					self.currentMonsterCard.spawnCard
 						});
 					}
 					return false;
@@ -385,11 +381,10 @@ namespace ScavengersForever
 			bool preventOverhead = self.currentMonsterCard.preventOverhead;
 			if (self.Spawn(spawnCard2, eliteDef2, spawnTarget, self.currentMonsterCard.spawnDistance, preventOverhead, valueMultiplier, placementMode))
 			{
-				self.monsterCredit -= (float)num / 10;
-				self.totalCreditsSpent += (float)num / 10;
+				self.monsterCredit -= (float)num;
+				self.totalCreditsSpent += (float)num;
 				self.spawnCountInCurrentWave++;
-				spawnCount++;
-				Debug.LogFormat("Spawned a scavenger. Current count: {0}", new object[] { spawnCount });
+				self.consecutiveCheapSkips = 0;
 				return true;
 			}
 			return false;
