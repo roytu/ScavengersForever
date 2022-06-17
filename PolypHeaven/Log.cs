@@ -1,6 +1,6 @@
 ﻿using BepInEx.Logging;
 
-namespace ScavengersForever
+namespace PolypHeaven
 {
     internal static class Log
     {
